@@ -10,38 +10,29 @@
 #include <lauxlib.h>
 
 const char* prelude = R"(
-function curry(f)
-    local function factory(...)
-        local args = {...}
-        local function thunk(x)
-            local full = {unpack(args)}
-            table.insert(full, x)
-            return f(unpack(full))
-        end
-        return thunk
-    end
-    return factory
-end
-
-function pong(func, callback)
+function pong(func, callback, ...)
+    assert(type(func) == 'function', 'type error :: function is expected')
     local thread = coroutine.create(func)
     local function step(...)
         local status, result = coroutine.resume(thread, ...)
+        assert(status, result)
         if coroutine.status(thread) == 'dead' then
             (callback or function () end)(result)
         else
+            assert(type(result) == 'function', 'type error :: function is expected')
             result(step)
         end
     end
-    step()
+    step(...)
     return thread
 end
 
 function async(func)
+    assert(type(func) == 'function', 'type error :: function is expected')
     local function factory(...)
         local args = {...}
         local function thunk(callback)
-            func(unpack(args))
+            pong(func, callback, unpack(args))
         end
         return thunk
     end
@@ -50,6 +41,29 @@ end
 
 function await(thunk)
     return coroutine.yield(thunk)
+end
+
+function join(thunks)
+    local len = table.getn(thunks)
+    local done = 0
+    local acc = {}
+    local function thunk(callback)
+        if len == 0 then
+            return callback()
+        end
+        for i, tk in ipairs(thunks) do
+            assert(type(tk) == 'function', 'type error :: function is expected')
+            local function cb(...)
+                acc[i] = {...}
+                done = done + 1
+                if done == len then
+                    callback(unpack(acc))
+                end
+            end
+            tk(cb)
+        end
+    end
+    return thunk
 end
 
 function sleep(ms)
@@ -61,10 +75,17 @@ end
 )";
 
 const char* code = R"(
-for i = 1, 5 do
-    print('x: ', i)
-    await(sleep(500))
+function foo(name, ms, count)
+    for i = 1, count do
+        print(name .. ': ' .. i)
+        await(sleep(ms))
+    end
 end
+
+await(join{
+    async(foo)('x', 1000, 4),
+    async(foo)('y', 500, 8)
+})
 )";
 
 using my_clock = std::chrono::steady_clock;
