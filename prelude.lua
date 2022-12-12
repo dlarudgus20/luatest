@@ -1,3 +1,15 @@
+function curry(f)
+    local function g(...)
+        local args = {...}
+        local function h(x)
+            table.insert(args, x)
+            return f(unpack(args))
+        end
+        return h
+    end
+    return g
+end
+
 function pong(func, callback, ...)
     assert(type(func) == 'function', 'type error :: function is expected')
     assert(type(callback) == 'function', 'type error :: function is expected')
@@ -82,9 +94,4 @@ function join(thunks)
     return thunk
 end
 
-function sleep(ms)
-    local function thunk(callback)
-        __sleep(ms, callback)
-    end
-    return thunk
-end
+sleep = curry(__sleep)
