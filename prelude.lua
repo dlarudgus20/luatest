@@ -17,12 +17,9 @@ function pong(func, callback, ...)
 end
 
 function entry(main)
-    local function thunk(callback)
-        __atexit(callback)
-    end
     return pong(function ()
         main()
-        coroutine.yield(thunk)
+        coroutine.yield(__atexit)
     end, function () end)
 end
 
