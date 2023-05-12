@@ -25,8 +25,14 @@
 
 int handleLuaError(lua_State* ls)
 {
-    luaL_dostring(ls, "debug.traceback");
-    lua_call(ls, 1, 1);
+    // https://stackoverflow.com/questions/12256455/print-stacktrace-from-c-code-with-embedded-lua
+    if (!lua_isstring(ls, 1))
+        return 1;
+    lua_getfield(ls, LUA_GLOBALSINDEX, "debug");
+    lua_getfield(ls, -1, "traceback");
+    lua_pushvalue(ls, 1);
+    lua_pushinteger(ls, 2);
+    lua_call(ls, 2, 1);
     return 1;
 }
 
@@ -174,37 +180,43 @@ mylua::~mylua()
 
 void mylua::prelude()
 {
+    lua_pushcfunction(ls, handleLuaError);
     if (luaL_loadfile(ls, "prelude.lua") != 0)
     {
         throw std::runtime_error(fmt::format("prelude compile error: {}", lua_tostring(ls, -1)));
     }
-    if (lua_pcall(ls, 0, 0, 0) != 0)
+    if (lua_pcall(ls, 0, 0, -2) != 0)
     {
         throw std::runtime_error(fmt::format("lua error: {}", lua_tostring(ls, -1)));
     }
+    lua_pop(ls, 1);
 }
 
 mylua_ref mylua::start_sync()
 {
+    lua_pushcfunction(ls, handleLuaError);
     if (luaL_loadfile(ls, "code.lua") != 0)
     {
         throw std::runtime_error(fmt::format("code compile error: {}", lua_tostring(ls, -1)));
     }
-    if (lua_pcall(ls, 0, 1, 0) != 0)
+    if (lua_pcall(ls, 0, 1, -2) != 0)
     {
         throw std::runtime_error(fmt::format("lua error: {}", lua_tostring(ls, -1)));
     }
-    return mylua_ref(ls);
+    mylua_ref ret(ls);
+    lua_pop(ls, 1);
+    return ret;
 }
 
 void mylua::start_async()
 {
+    lua_pushcfunction(ls, handleLuaError);
     lua_getglobal(ls, "__start");
     if (luaL_loadfile(ls, "code.lua") != 0)
     {
         throw std::runtime_error(fmt::format("code compile error: {}", lua_tostring(ls, -1)));
     }
-    if (lua_pcall(ls, 1, 1, 0) != 0)
+    if (lua_pcall(ls, 1, 1, -3) != 0)
     {
         throw std::runtime_error(fmt::format("lua error: {}", lua_tostring(ls, -1)));
     }
@@ -214,7 +226,7 @@ void mylua::start_async()
     {
         throw std::runtime_error("entry() must return thread");
     }
-    lua_pop(ls, 1);
+    lua_pop(ls, 2);
 }
 
 void mylua::register_closure(const char* name, lua_CFunction fn, void* self)
@@ -242,14 +254,16 @@ bool mylua::run_async()
             {
                 int ref = it->ref;
 
+                lua_pushcfunction(ls, handleLuaError);
                 lua_rawgeti(ls, LUA_REGISTRYINDEX, ref);
-                if (lua_pcall(ls, 0, 0, 0) != 0)
+                if (lua_pcall(ls, 0, 0, -2) != 0)
                 {
                     std::cerr << "lua error: " << lua_tostring(ls, -1) << "\n";
                     lua_pop(ls, 1);
                 }
 
                 luaL_unref(ls, LUA_REGISTRYINDEX, ref);
+                lua_pop(ls, 1);
                 sleep_queue.erase(it++);
             }
             else
@@ -274,14 +288,16 @@ void mylua::run_atexit()
 {
     for (int ref : atexit_queue)
     {
+        lua_pushcfunction(ls, handleLuaError);
         lua_rawgeti(ls, LUA_REGISTRYINDEX, ref);
-        if (lua_pcall(ls, 0, 0, 0) != 0)
+        if (lua_pcall(ls, 0, 0, -2) != 0)
         {
             std::cerr << "lua error: " << lua_tostring(ls, -1) << "\n";
             lua_pop(ls, 1);
         }
 
         luaL_unref(ls, LUA_REGISTRYINDEX, ref);
+        lua_pop(ls, 1);
     }
     atexit_queue.clear();
 }
@@ -660,13 +676,16 @@ int main(int argc, char** argv)
             if (auto scriptComponent = e.get_component("script"))
             {
                 auto ls = scriptComponent.state();
+
+                lua_pushcfunction(ls, handleLuaError);
                 scriptComponent.push();
                 lua_getfield(ls, -1, "onUpdate");
-                if (lua_pcall(ls, 0, 0, 0) != 0)
+                if (lua_pcall(ls, 0, 0, -3) != 0)
                 {
                     std::cout << fmt::format("onUpdate() error: {}\n", lua_tostring(ls, -1));
+                    lua_pop(ls, 1);
                 }
-                lua_pop(ls, 1);
+                lua_pop(ls, 2);
             }
         });
     }
