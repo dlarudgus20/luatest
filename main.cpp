@@ -510,15 +510,15 @@ void entity::traverse(std::invocable<entity&> auto f)
     lua_pushnil(ls);
     while (lua_next(ls, -2))
     {
-        if (lua_isstring(ls, -2) && std::strcmp(lua_tostring(ls, -2), "components") != 0)
-        {
-            entity child { mylua_ref(ls) };
-            child.traverse(f);
-        }
-        else
+        // lua_isstring() returns true even when the value is number - which is convertible to string
+        if (lua_type(ls, -2) == LUA_TSTRING && std::strcmp(lua_tostring(ls, -2), "components") == 0)
         {
             lua_pop(ls, 1);
+            continue;
         }
+
+        entity child { mylua_ref(ls) };
+        child.traverse(f);
     }
     lua_pop(ls, 1);
 }
