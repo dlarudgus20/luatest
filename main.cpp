@@ -464,7 +464,7 @@ void scene::present(SDL_Renderer* renderer)
 
 void rect_renderer(SDL_Renderer* renderer, const transform& tr)
 {
-    SDL_FRect rt { .x = tr.position.x, .y = tr.position.y, .w = tr.scale.x, .h = tr.scale.y };
+    SDL_FRect rt { .x = tr.position.x - tr.scale.x / 2, .y = tr.position.y - tr.scale.y / 2, .w = tr.scale.x, .h = tr.scale.y };
     SDL_SetRenderDrawColor(renderer, 96, 128, 255, 255);
     SDL_RenderFillRectF(renderer, &rt);
 }
