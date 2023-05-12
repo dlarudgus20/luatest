@@ -1,4 +1,7 @@
-function curry(f)
+package.path = './libs/?.lua;./libs/?/init.lua'
+package.cpath = ''
+
+local function curry(f)
     local function g(...)
         local args = {...}
         local function h(x)
@@ -10,7 +13,7 @@ function curry(f)
     return g
 end
 
-function pong(func, callback, ...)
+local function pong(func, callback, ...)
     assert(type(func) == 'function', 'type error :: function is expected')
     assert(type(callback) == 'function', 'type error :: function is expected')
     local thread = coroutine.create(func)
@@ -28,7 +31,7 @@ function pong(func, callback, ...)
     return thread
 end
 
-function entry(main)
+function __start(main)
     return pong(function ()
         main()
         coroutine.yield(__atexit)
@@ -95,3 +98,80 @@ function join(thunks)
 end
 
 sleep = curry(__sleep)
+
+vec2 = { x = 0, y = 0 }
+vec2.__index = vec2
+
+function vec2.new(x, y)
+    return setmetatable({ x = x, y = y }, vec2)
+end
+
+function vec2:add(x, y)
+    self.x = self.x + x
+    self.y = self.y + y
+    return self
+end
+
+function vec2:mul(x, y)
+    self.x = self.x * x
+    self.y = self.y * y
+    return self
+end
+
+Entity = {}
+Entity.__index = Entity
+
+function Entity.new()
+    local o = {}
+    o.components = {}
+    setmetatable(o, Entity)
+    return o
+end
+
+function Entity:addComponent(name, component)
+    self.components[name] = component
+end
+
+Transform = {}
+Transform.__index = Transform
+
+function Transform.new()
+    local o = {}
+    o._position = vec2.new(0, 0)
+    o._scale = vec2.new(1, 1)
+    o._rotate = 0
+    setmetatable(o, Transform)
+    return o
+end
+
+function Transform:move(x, y)
+    self._position:add(x, y)
+    return self
+end
+
+function Transform:scale(x, y)
+    self._scale:mul(x, y)
+    return self
+end
+
+function Transform:rotate(angle)
+    self._rotate = self._rotate * angle
+    return self
+end
+
+local function createRenderer(impl)
+    local renderer = {}
+    renderer.__index = renderer
+    function renderer.__newindex(t, k, v)
+        error("readonly table")
+    end
+    function renderer.new()
+        local o = {}
+        o.__renderer = impl
+        setmetatable(o, renderer)
+        return o
+    end
+    return renderer
+end
+
+RectRenderer = createRenderer(__rectRenderer)

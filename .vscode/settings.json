@@ -48,6 +48,13 @@
         "stdexcept": "cpp",
         "streambuf": "cpp",
         "typeinfo": "cpp",
-        "list": "cpp"
-    }
+        "list": "cpp",
+        "stop_token": "cpp",
+        "thread": "cpp",
+        "cstring": "cpp",
+        "cinttypes": "cpp",
+        "map": "cpp"
+    },
+    "cmake.configureOnOpen": true,
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
 }

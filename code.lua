@@ -1,9 +1,7 @@
-function foo(name, ms, count)
-    for i = 1, count do
-        print(name .. ': ' .. i)
-        await(sleep(ms))
-    end
-end
-
-async(foo)('x', 1000, 4)
-async(foo)('y', 500, 8)
+scene = Entity.new()
+scene.rect1 = Entity.new()
+scene.rect1:addComponent("transform", Transform.new():move(100, 100):scale(30, 30))
+scene.rect1:addComponent("renderer", RectRenderer.new())
+scene.rect2 = Entity.new()
+scene.rect2:addComponent("transform", Transform.new():move(300, 100):scale(50, 50))
+scene.rect2:addComponent("renderer", RectRenderer.new())
