@@ -22,3 +22,7 @@ if (TARGET SDL2::SDL2main)
     target_link_libraries(luatest SDL2::SDL2main)
 endif()
 target_link_libraries(luatest SDL2::SDL2)
+
+set(CPACK_PROJECT_NAME ${PROJECT_NAME})
+set(CPACK_PROJECT_VERSION ${PROJECT_VERSION})
+include(CPack)

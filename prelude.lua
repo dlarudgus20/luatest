@@ -159,11 +159,26 @@ function Transform:rotate(angle)
     return self
 end
 
+local function setReadonly(o)
+    return setmetatable(o, { __newindex = function(t, k, v) error('readonly table') end })
+end
+
+Time = setReadonly({ deltaTime = 0 })
+
+Input = setReadonly({ axis = setReadonly({}) })
+
+Script = {}
+Script.__index = Script
+
+function Script.new()
+    return setmetatable({}, Script)
+end
+
 local function createRenderer(impl)
     local renderer = {}
     renderer.__index = renderer
-    function renderer.__newindex(t, k, v)
-        error("readonly table")
+    function renderer:__newindex(k, v)
+        error('readonly table')
     end
     function renderer.new()
         local o = {}

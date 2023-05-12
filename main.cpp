@@ -23,6 +23,13 @@
 #include <lualib.h>
 #include <lauxlib.h>
 
+int handleLuaError(lua_State* ls)
+{
+    luaL_dostring(ls, "debug.traceback");
+    lua_call(ls, 1, 1);
+    return 1;
+}
+
 class mylua_ref final
 {
 public:
@@ -100,11 +107,16 @@ public:
     mylua();
     ~mylua();
 
+    lua_State* state() const { return ls; }
+
     void register_closure(const char* name, lua_CFunction fn, void* self);
     void register_ludata(const char* name, void* data);
 
-    void start();
-    bool run();
+    void prelude();
+    mylua_ref start_sync();
+
+    void start_async();
+    bool run_async();
     void run_atexit();
 
     mylua_ref global(const char* name);
@@ -165,7 +177,7 @@ mylua::~mylua()
     lua_close(ls);
 }
 
-void mylua::start()
+void mylua::prelude()
 {
     if (luaL_loadfile(ls, "prelude.lua") != 0)
     {
@@ -175,7 +187,23 @@ void mylua::start()
     {
         throw std::runtime_error(fmt::format("lua error: {}", lua_tostring(ls, -1)));
     }
+}
 
+mylua_ref mylua::start_sync()
+{
+    if (luaL_loadfile(ls, "code.lua") != 0)
+    {
+        throw std::runtime_error(fmt::format("code compile error: {}", lua_tostring(ls, -1)));
+    }
+    if (lua_pcall(ls, 0, 1, 0) != 0)
+    {
+        throw std::runtime_error(fmt::format("lua error: {}", lua_tostring(ls, -1)));
+    }
+    return mylua_ref(ls);
+}
+
+void mylua::start_async()
+{
     lua_getglobal(ls, "__start");
     if (luaL_loadfile(ls, "code.lua") != 0)
     {
@@ -207,7 +235,7 @@ void mylua::register_ludata(const char* name, void* data)
     lua_setglobal(ls, name);
 }
 
-bool mylua::run()
+bool mylua::run_async()
 {
     if (lua_status(thread) == LUA_YIELD)
     {
@@ -280,11 +308,20 @@ public:
         return renderer;
     }
 
-    bool poll();
+    bool poll(double deltaTime);
+    void bind_input(lua_State* ls);
 
 private:
     SDL_Window* wnd;
     SDL_Renderer* renderer;
+
+    std::map<std::string, double> input_axis;
+    struct {
+        bool left = false, right = false, up = false, down = false;
+        bool a = false, d = false, w = false, s = false;
+    } keys;
+
+    void onKey(SDL_KeyboardEvent& event);
 
     window(const window&) = delete;
     window& operator =(const window&) = delete;
@@ -305,6 +342,9 @@ window::window()
     {
         throw std::runtime_error(fmt::format("failed to create renderer: {}", SDL_GetError()));
     }
+
+    input_axis.emplace("Horizontal", 0.0);
+    input_axis.emplace("Vertical", 0.0);
 }
 
 window::~window()
@@ -313,17 +353,86 @@ window::~window()
     SDL_DestroyWindow(wnd);
 }
 
-bool window::poll()
+bool window::poll(double deltaTime)
 {
     SDL_Event event;
     while (SDL_PollEvent(&event))
     {
-        if (event.type == SDL_QUIT)
+        switch (event.type)
         {
-            return false;
+            case SDL_KEYDOWN:
+            case SDL_KEYUP:
+                onKey(event.key);
+                break;
+            case SDL_QUIT:
+                return false;
         }
     }
+
+    input_axis["Horizontal"] = deltaTime * ((keys.left || keys.a ? -1 : 0) + (keys.right || keys.d ? 1 : 0));
+    input_axis["Vertical"] = deltaTime * ((keys.up || keys.w ? -1 : 0) + (keys.down || keys.s ? 1 : 0));
+
     return true;
+}
+
+void window::bind_input(lua_State* ls)
+{
+    lua_getglobal(ls, "Input");
+    lua_getfield(ls, -1, "axis");
+    lua_getmetatable(ls, -1);
+    lua_pushlightuserdata(ls, this);
+    lua_pushcclosure(ls, [](lua_State* ls) {
+        auto wnd = closure_upvalue<window*>(ls, 1);
+        auto key = lua_tostring(ls, 2);
+        if (auto it = wnd->input_axis.find(key); it != wnd->input_axis.end())
+        {
+            lua_pushnumber(ls, it->second);
+            return 1;
+        }
+        else
+        {
+            return luaL_error(ls, "invalid input axis name");
+        }
+    }, 1);
+    lua_setfield(ls, -2, "__index");
+    lua_pop(ls, 3);
+}
+
+void window::onKey(SDL_KeyboardEvent& event)
+{
+    bool pressed = event.type == SDL_KEYDOWN;
+    if (event.keysym.scancode == SDL_SCANCODE_LEFT)
+    {
+        keys.left = pressed;
+    }
+    if (event.keysym.scancode == SDL_SCANCODE_RIGHT)
+    {
+        keys.right = pressed;
+    }
+    if (event.keysym.scancode == SDL_SCANCODE_UP)
+    {
+        keys.up = pressed;
+    }
+    if (event.keysym.scancode == SDL_SCANCODE_DOWN)
+    {
+        keys.down = pressed;
+    }
+    if (event.keysym.scancode == SDL_SCANCODE_A)
+    {
+        keys.a = pressed;
+    }
+    if (event.keysym.scancode == SDL_SCANCODE_D)
+    {
+        keys.d = pressed;
+    }
+    if (event.keysym.scancode == SDL_SCANCODE_W)
+    {
+        keys.w = pressed;
+    }
+    if (event.keysym.scancode == SDL_SCANCODE_S)
+    {
+        keys.s = pressed;
+    }
 }
 
 class entity final
@@ -400,7 +509,10 @@ class scene final
 {
 public:
     explicit scene(mylua_ref s);
+    void prepare(SDL_Renderer* renderer);
     void present(SDL_Renderer* renderer);
+
+    entity& get_root() { return root; }
 
 private:
     entity root;
@@ -423,7 +535,7 @@ struct transform
 
 using renderer_t = void (*)(SDL_Renderer* renderer, const transform& tr);
 
-void scene::present(SDL_Renderer* renderer)
+void scene::prepare(SDL_Renderer* renderer)
 {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
@@ -458,7 +570,10 @@ void scene::present(SDL_Renderer* renderer)
             f(renderer, tr);
         }
     });
+}
 
+void scene::present(SDL_Renderer* renderer)
+{
     SDL_RenderPresent(renderer);
 }
 
@@ -480,25 +595,53 @@ int main(int argc, char** argv)
     mylua script;
 
     script.register_ludata("__rectRenderer", reinterpret_cast<void*>(rect_renderer));
-    script.start();
+    script.prelude();
+    wnd.bind_input(script.state());
 
-    scene sc(script.global("scene"));
+    scene sc(script.start_sync());
+    auto prev = my_clock::now();
 
     while (true)
     {
-        bool run = wnd.poll();
+        auto renderer = wnd.get_renderer();
+        sc.prepare(renderer);
+
+        auto now = my_clock::now();
+        auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(now - prev);
+        auto deltaTime = std::max(diff.count() / 1000.0, 0.0001);
+        prev = now;
+
+        auto ls = script.state();
+        lua_getglobal(ls, "Time");
+        lua_pushstring(ls, "deltaTime");
+        lua_pushnumber(ls, deltaTime);
+        lua_rawset(ls, -3);
+        lua_pop(ls, 1);
+
+        bool run = wnd.poll(deltaTime);
         if (run)
         {
-            auto renderer = wnd.get_renderer();
             sc.present(renderer);
-            script.run();
         }
         else
         {
-            script.run_atexit();
             break;
         }
 
         SDL_Delay(16);
+
+        sc.get_root().traverse([](entity& e) {
+            if (auto scriptComponent = e.get_component("script"))
+            {
+                auto ls = scriptComponent.state();
+                scriptComponent.push();
+                lua_getfield(ls, -1, "onUpdate");
+                if (lua_pcall(ls, 0, 0, 0) != 0)
+                {
+                    std::cout << fmt::format("onUpdate() error: {}\n", lua_tostring(ls, -1));
+                }
+                lua_pop(ls, 1);
+            }
+        });
     }
 }
