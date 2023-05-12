@@ -141,35 +141,30 @@ T closure_upvalue(lua_State* ls, int index)
     return static_cast<T>(lua_touserdata(ls, lua_upvalueindex(index)));
 }
 
-int mylua_atexit(lua_State* ls)
-{
-    auto self = closure_upvalue<mylua*>(ls, 1);
-    int ref = luaL_ref(ls, LUA_REGISTRYINDEX);
-    self->atexit_queue.push_back(ref);
-    return 0;
-}
-
-int mylua_sleep(lua_State* ls)
-{
-    auto self = closure_upvalue<mylua*>(ls, 1);
-
-    auto ms = static_cast<std::chrono::milliseconds::rep>(lua_tonumber(ls, -2));
-    auto time = my_clock::now() + std::chrono::milliseconds(ms);
-
-    int ref = luaL_ref(ls, LUA_REGISTRYINDEX);
-    lua_pop(ls, 1);
-
-    self->sleep_queue.push_back({ time, ref });
-    return 0;
-}
-
 mylua::mylua()
 {
     ls = luaL_newstate();
     luaL_openlibs(ls);
 
-    register_closure("__atexit", mylua_atexit, this);
-    register_closure("__sleep", mylua_sleep, this);
+    register_closure("__atexit", [](lua_State* ls) {
+        auto self = closure_upvalue<mylua*>(ls, 1);
+        int ref = luaL_ref(ls, LUA_REGISTRYINDEX);
+        self->atexit_queue.push_back(ref);
+        return 0;
+    }, this);
+
+    register_closure("__sleep", [](lua_State* ls) {
+        auto self = closure_upvalue<mylua*>(ls, 1);
+
+        auto ms = static_cast<std::chrono::milliseconds::rep>(lua_tonumber(ls, -2));
+        auto time = my_clock::now() + std::chrono::milliseconds(ms);
+
+        int ref = luaL_ref(ls, LUA_REGISTRYINDEX);
+        lua_pop(ls, 1);
+
+        self->sleep_queue.push_back({ time, ref });
+        return 0;
+    }, this);
 }
 
 mylua::~mylua()
