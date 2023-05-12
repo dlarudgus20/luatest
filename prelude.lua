@@ -99,23 +99,30 @@ end
 
 sleep = curry(__sleep)
 
-vec2 = { x = 0, y = 0 }
-vec2.__index = vec2
+Vec2 = { x = 0, y = 0 }
+Vec2.__index = Vec2
 
-function vec2.new(x, y)
-    return setmetatable({ x = x, y = y }, vec2)
+function Vec2.new(x, y)
+    return setmetatable({ x = x, y = y }, Vec2)
 end
 
-function vec2:add(x, y)
+function Vec2:add(x, y)
     self.x = self.x + x
     self.y = self.y + y
     return self
 end
 
-function vec2:mul(x, y)
+function Vec2:mul(x, y)
     self.x = self.x * x
     self.y = self.y * y
     return self
+end
+
+Color = { r = 0, g = 0, b = 0, a = 0 }
+Color.__index = Color
+
+function Color.new(r, g, b, a)
+    return setmetatable({ r = r, g = g, b = b, a = a }, Color)
 end
 
 Entity = {}
@@ -137,8 +144,8 @@ Transform.__index = Transform
 
 function Transform.new()
     local o = {}
-    o._position = vec2.new(0, 0)
-    o._scale = vec2.new(1, 1)
+    o._position = Vec2.new(0, 0)
+    o._scale = Vec2.new(1, 1)
     o._rotate = 0
     setmetatable(o, Transform)
     return o
@@ -174,19 +181,17 @@ function Script.new()
     return setmetatable({}, Script)
 end
 
-local function createRenderer(impl)
-    local renderer = {}
-    renderer.__index = renderer
-    function renderer:__newindex(k, v)
-        error('readonly table')
-    end
-    function renderer.new()
-        local o = {}
-        o.__renderer = impl
-        setmetatable(o, renderer)
-        return o
-    end
-    return renderer
+RectRenderer = { __renderer = __rectRenderer }
+RectRenderer.__index = RectRenderer
+
+function RectRenderer.new()
+    return setmetatable({ color = Color.new(0.375, 0.5, 1, 1) }, RectRenderer)
 end
 
-RectRenderer = createRenderer(__rectRenderer)
+function RectRenderer:setColor(r, g, b, a)
+    self.color.r = r
+    self.color.g = g
+    self.color.b = b
+    self.color.a = a
+    return self
+end

@@ -308,6 +308,13 @@ public:
         return renderer;
     }
 
+    std::pair<int, int> get_size() const
+    {
+        int w, h;
+        SDL_GetWindowSize(wnd, &w, &h);
+        return { w, h };
+    }
+
     bool poll(double deltaTime);
     void bind_input(lua_State* ls);
 
@@ -370,7 +377,7 @@ bool window::poll(double deltaTime)
     }
 
     input_axis["Horizontal"] = deltaTime * ((keys.left || keys.a ? -1 : 0) + (keys.right || keys.d ? 1 : 0));
-    input_axis["Vertical"] = deltaTime * ((keys.up || keys.w ? -1 : 0) + (keys.down || keys.s ? 1 : 0));
+    input_axis["Vertical"] = deltaTime * ((keys.up || keys.w ? 1 : 0) + (keys.down || keys.s ? -1 : 0));
 
     return true;
 }
@@ -509,8 +516,8 @@ class scene final
 {
 public:
     explicit scene(mylua_ref s);
-    void prepare(SDL_Renderer* renderer);
-    void present(SDL_Renderer* renderer);
+    void prepare(window& wnd);
+    void present(window& wnd);
 
     entity& get_root() { return root; }
 
@@ -533,14 +540,16 @@ struct transform
     }
 };
 
-using renderer_t = void (*)(SDL_Renderer* renderer, const transform& tr);
+using renderer_t = void (*)(window& wnd, const transform& tr, mylua_ref component);
 
-void scene::prepare(SDL_Renderer* renderer)
+void scene::prepare(window& wnd)
 {
+    auto renderer = wnd.get_renderer();
+
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
 
-    root.traverse([this, renderer](entity& e) {
+    root.traverse([this, &wnd](entity& e) {
         mylua_ref rendererComponent = e.get_component("renderer");
         auto ls = rendererComponent.state();
         if (rendererComponent)
@@ -566,21 +575,44 @@ void scene::prepare(SDL_Renderer* renderer)
             rendererComponent.push();
             lua_getfield(ls, -1, "__renderer");
             auto f = reinterpret_cast<renderer_t>(lua_touserdata(ls, -1));
-            lua_pop(ls, 2);
-            f(renderer, tr);
+            lua_pop(ls, 1);
+            f(wnd, tr, mylua_ref(ls));
         }
     });
 }
 
-void scene::present(SDL_Renderer* renderer)
+void scene::present(window& wnd)
 {
+    auto renderer = wnd.get_renderer();
     SDL_RenderPresent(renderer);
 }
 
-void rect_renderer(SDL_Renderer* renderer, const transform& tr)
+void rect_renderer(window& wnd, const transform& tr, mylua_ref component)
 {
-    SDL_FRect rt { .x = tr.position.x - tr.scale.x / 2, .y = tr.position.y - tr.scale.y / 2, .w = tr.scale.x, .h = tr.scale.y };
-    SDL_SetRenderDrawColor(renderer, 96, 128, 255, 255);
+    auto ls = component.state();
+    component.push();
+    lua_getfield(ls, -1, "color");
+    lua_getfield(ls, -1, "r");
+    lua_getfield(ls, -2, "g");
+    lua_getfield(ls, -3, "b");
+    lua_getfield(ls, -4, "a");
+    int r = int(lua_tonumber(ls, -4) * 255);
+    int g = int(lua_tonumber(ls, -3) * 255);
+    int b = int(lua_tonumber(ls, -2) * 255);
+    int a = int(lua_tonumber(ls, -1) * 255);
+    lua_pop(ls, 6);
+
+    auto renderer = wnd.get_renderer();
+    auto [w, h] = wnd.get_size();
+
+    SDL_FRect rt {
+        .x = w / 2.f + tr.position.x - tr.scale.x / 2,
+        .y = h / 2.f - tr.position.y - tr.scale.y / 2,
+        .w = tr.scale.x,
+        .h = tr.scale.y
+    };
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, r, g, b, a);
     SDL_RenderFillRectF(renderer, &rt);
 }
 
@@ -603,8 +635,7 @@ int main(int argc, char** argv)
 
     while (true)
     {
-        auto renderer = wnd.get_renderer();
-        sc.prepare(renderer);
+        sc.prepare(wnd);
 
         auto now = my_clock::now();
         auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(now - prev);
@@ -621,7 +652,7 @@ int main(int argc, char** argv)
         bool run = wnd.poll(deltaTime);
         if (run)
         {
-            sc.present(renderer);
+            sc.present(wnd);
         }
         else
         {

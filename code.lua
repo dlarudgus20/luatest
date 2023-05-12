@@ -1,9 +1,9 @@
 local scene = Entity.new()
 scene.rect1 = Entity.new()
-scene.rect1:addComponent('transform', Transform.new():move(100, 100):scale(30, 30))
-scene.rect1:addComponent('renderer', RectRenderer.new())
+scene.rect1:addComponent('transform', Transform.new():scale(30, 30):move(-100, 0))
+scene.rect1:addComponent('renderer', RectRenderer.new():setColor(1, 0.5, 0.5, 0.8))
 scene.rect2 = Entity.new()
-scene.rect2:addComponent('transform', Transform.new():move(300, 100):scale(50, 50))
+scene.rect2:addComponent('transform', Transform.new():scale(50, 50):move(100, 0))
 scene.rect2:addComponent('renderer', RectRenderer.new())
 
 local script = Script.new()
