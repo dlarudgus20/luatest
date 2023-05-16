@@ -12,12 +12,14 @@
 #include <concepts>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 #include <fmt/format.h>
 
 #include <glm/glm.hpp>
 
 #include <SDL2/SDL.h>
+#include <SDL2_gfxPrimitives.h>
 
 #include <lua.h>
 #include <lualib.h>
@@ -119,9 +121,8 @@ public:
     void register_ludata(const char* name, void* data);
 
     void prelude();
-    mylua_ref start_sync();
+    mylua_ref start();
 
-    void start_async();
     bool run_async();
     void run_atexit();
 
@@ -162,7 +163,7 @@ mylua::mylua()
     register_closure("__sleep", [](lua_State* ls) {
         auto self = closure_upvalue<mylua*>(ls, 1);
 
-        auto ms = static_cast<std::chrono::milliseconds::rep>(lua_tonumber(ls, -2));
+        auto ms = static_cast<std::chrono::milliseconds::rep>(lua_tonumber(ls, -2) * 1000);
         auto time = my_clock::now() + std::chrono::milliseconds(ms);
 
         int ref = luaL_ref(ls, LUA_REGISTRYINDEX);
@@ -192,7 +193,7 @@ void mylua::prelude()
     lua_pop(ls, 1);
 }
 
-mylua_ref mylua::start_sync()
+mylua_ref mylua::start()
 {
     lua_pushcfunction(ls, handleLuaError);
     if (luaL_loadfile(ls, "code.lua") != 0)
@@ -206,27 +207,6 @@ mylua_ref mylua::start_sync()
     mylua_ref ret(ls);
     lua_pop(ls, 1);
     return ret;
-}
-
-void mylua::start_async()
-{
-    lua_pushcfunction(ls, handleLuaError);
-    lua_getglobal(ls, "__start");
-    if (luaL_loadfile(ls, "code.lua") != 0)
-    {
-        throw std::runtime_error(fmt::format("code compile error: {}", lua_tostring(ls, -1)));
-    }
-    if (lua_pcall(ls, 1, 1, -3) != 0)
-    {
-        throw std::runtime_error(fmt::format("lua error: {}", lua_tostring(ls, -1)));
-    }
-
-    thread = lua_tothread(ls, -1);
-    if (!thread)
-    {
-        throw std::runtime_error("entry() must return thread");
-    }
-    lua_pop(ls, 2);
 }
 
 void mylua::register_closure(const char* name, lua_CFunction fn, void* self)
@@ -334,6 +314,7 @@ private:
     SDL_Renderer* renderer;
 
     std::map<std::string, double> input_axis;
+    std::map<std::string, bool> input_button;
     struct {
         bool left = false, right = false, up = false, down = false;
         bool a = false, d = false, w = false, s = false;
@@ -361,8 +342,9 @@ window::window()
         throw std::runtime_error(fmt::format("failed to create renderer: {}", SDL_GetError()));
     }
 
-    input_axis.emplace("Horizontal", 0.0);
-    input_axis.emplace("Vertical", 0.0);
+    input_axis["Horizontal"] = 0.0;
+    input_axis["Vertical"] = 0.0;
+    input_button["Fire1"] = false;
 }
 
 window::~window()
@@ -396,6 +378,7 @@ bool window::poll(double deltaTime)
 void window::bind_input(lua_State* ls)
 {
     lua_getglobal(ls, "Input");
+
     lua_getfield(ls, -1, "axis");
     lua_getmetatable(ls, -1);
     lua_pushlightuserdata(ls, this);
@@ -409,16 +392,38 @@ void window::bind_input(lua_State* ls)
         }
         else
         {
-            return luaL_error(ls, "invalid input axis name");
+            return luaL_error(ls, "invalid input.axis name");
         }
     }, 1);
     lua_setfield(ls, -2, "__index");
-    lua_pop(ls, 3);
+    lua_pop(ls, 2);
+
+    lua_getfield(ls, -1, "button");
+    lua_getmetatable(ls, -1);
+    lua_pushlightuserdata(ls, this);
+    lua_pushcclosure(ls, [](lua_State* ls) {
+        auto wnd = closure_upvalue<window*>(ls, 1);
+        auto key = lua_tostring(ls, 2);
+        if (auto it = wnd->input_button.find(key); it != wnd->input_button.end())
+        {
+            lua_pushboolean(ls, it->second);
+            return 1;
+        }
+        else
+        {
+            return luaL_error(ls, "invalid input.button name");
+        }
+    }, 1);
+    lua_setfield(ls, -2, "__index");
+    lua_pop(ls, 2);
+
+    lua_pop(ls, 1);
 }
 
 void window::onKey(SDL_KeyboardEvent& event)
 {
     bool pressed = event.type == SDL_KEYDOWN;
+
     if (event.keysym.scancode == SDL_SCANCODE_LEFT)
     {
         keys.left = pressed;
@@ -451,6 +456,11 @@ void window::onKey(SDL_KeyboardEvent& event)
     {
         keys.s = pressed;
     }
+
+    if (event.keysym.scancode == SDL_SCANCODE_SPACE)
+    {
+        input_button["Fire1"] = pressed;
+    }
 }
 
 class entity final
@@ -458,9 +468,16 @@ class entity final
 public:
     explicit entity(mylua_ref s) : table(std::move(s)) {}
 
+    mylua_ref& get_ref() { return table; }
+
     mylua_ref get_component(const char* component);
     std::vector<std::pair<std::string, mylua_ref>> get_components();
-    void traverse(std::invocable<entity&> auto f);
+
+    void traverse(std::invocable<entity&, const glm::mat3&> auto f)
+    {
+        traverse(std::forward<decltype(f)>(f), glm::mat3(1.0f));
+    }
+    void traverse(std::invocable<entity&, const glm::mat3&> auto f, glm::mat3 mat);
 
 private:
     mylua_ref table;
@@ -501,26 +518,41 @@ std::vector<std::pair<std::string, mylua_ref>> entity::get_components()
     return v;
 }
 
-void entity::traverse(std::invocable<entity&> auto f)
+void entity::traverse(std::invocable<entity&, const glm::mat3&> auto f, glm::mat3 mat)
 {
-    std::invoke(f, *this);
+    std::invoke(f, *this, mat);
 
     auto ls = table.state();
     table.push();
+    lua_getfield(ls, -1, "children");
     lua_pushnil(ls);
     while (lua_next(ls, -2))
     {
-        // lua_isstring() returns true even when the value is number - which is convertible to string
-        if (lua_type(ls, -2) == LUA_TSTRING && std::strcmp(lua_tostring(ls, -2), "components") == 0)
-        {
-            lua_pop(ls, 1);
-            continue;
-        }
-
         entity child { mylua_ref(ls) };
-        child.traverse(f);
+
+        mylua_ref transformComponent = child.get_component("transform");
+        transformComponent.push();
+        lua_getfield(ls, -1, "position");
+        lua_getfield(ls, -1, "x");
+        lua_getfield(ls, -2, "y");
+        lua_getfield(ls, -4, "scale");
+        lua_getfield(ls, -1, "x");
+        lua_getfield(ls, -2, "y");
+        lua_getfield(ls, -7, "rotate");
+        glm::vec2 pos(lua_tonumber(ls, -6), lua_tonumber(ls, -5));
+        glm::vec2 scale(lua_tonumber(ls, -3), lua_tonumber(ls, -2));
+        float rotate = lua_tonumber(ls, -1);
+        lua_pop(ls, 8);
+
+        float c = std::cos(rotate), s = std::sin(rotate);
+        glm::mat3 local(
+            c * scale.x, s * scale.y, 0,
+            -s * scale.x, c * scale.y, 0,
+            pos.x, pos.y, 1);
+
+        child.traverse(f, mat * local);
     }
-    lua_pop(ls, 1);
+    lua_pop(ls, 2);
 }
 
 class scene final
@@ -541,17 +573,7 @@ scene::scene(mylua_ref s)
 {
 }
 
-struct transform
-{
-    glm::vec2 position, scale;
-    float rotate;
-    static transform identity()
-    {
-        return transform { .position = glm::vec2(0, 0), .scale = glm::vec2(1, 1), .rotate = 1.0f };
-    }
-};
-
-using renderer_t = void (*)(window& wnd, const transform& tr, mylua_ref component);
+using renderer_t = void (*)(window& wnd, const glm::mat3& tr, mylua_ref component);
 
 void scene::prepare(window& wnd)
 {
@@ -560,29 +582,11 @@ void scene::prepare(window& wnd)
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
 
-    root.traverse([this, &wnd](entity& e) {
+    root.traverse([this, &wnd](entity& e, const glm::mat3& tr) {
         mylua_ref rendererComponent = e.get_component("renderer");
         auto ls = rendererComponent.state();
         if (rendererComponent)
         {
-            mylua_ref transformComponent = e.get_component("transform");
-            auto tr = transform::identity();
-            if (transformComponent)
-            {
-                transformComponent.push();
-                lua_getfield(ls, -1, "_position");
-                lua_getfield(ls, -1, "x");
-                lua_getfield(ls, -2, "y");
-                lua_getfield(ls, -4, "_scale");
-                lua_getfield(ls, -1, "x");
-                lua_getfield(ls, -2, "y");
-                lua_getfield(ls, -7, "_rotate");
-                tr.position = glm::vec2(lua_tonumber(ls, -6), lua_tonumber(ls, -5));
-                tr.scale = glm::vec2(lua_tonumber(ls, -3), lua_tonumber(ls, -2));
-                tr.rotate = lua_tonumber(ls, -1);
-                lua_pop(ls, 8);
-            }
-
             rendererComponent.push();
             lua_getfield(ls, -1, "__renderer");
             auto f = reinterpret_cast<renderer_t>(lua_touserdata(ls, -1));
@@ -598,33 +602,48 @@ void scene::present(window& wnd)
     SDL_RenderPresent(renderer);
 }
 
-void rect_renderer(window& wnd, const transform& tr, mylua_ref component)
+void rect_renderer(window& wnd, const glm::mat3& tr, mylua_ref component)
 {
     auto ls = component.state();
     component.push();
+
+    lua_getfield(ls, -1, "fill");
+    bool fill = lua_toboolean(ls, -1);
+    lua_pop(ls, 1);
+
     lua_getfield(ls, -1, "color");
     lua_getfield(ls, -1, "r");
     lua_getfield(ls, -2, "g");
     lua_getfield(ls, -3, "b");
     lua_getfield(ls, -4, "a");
-    int r = int(lua_tonumber(ls, -4) * 255);
-    int g = int(lua_tonumber(ls, -3) * 255);
-    int b = int(lua_tonumber(ls, -2) * 255);
-    int a = int(lua_tonumber(ls, -1) * 255);
+    Sint8 r = std::clamp(int(lua_tonumber(ls, -4) * 255), 0, 255);
+    Sint8 g = std::clamp(int(lua_tonumber(ls, -3) * 255), 0, 255);
+    Sint8 b = std::clamp(int(lua_tonumber(ls, -2) * 255), 0, 255);
+    Sint8 a = std::clamp(int(lua_tonumber(ls, -1) * 255), 0, 255);
     lua_pop(ls, 6);
 
     auto renderer = wnd.get_renderer();
     auto [w, h] = wnd.get_size();
 
-    SDL_FRect rt {
-        .x = w / 2.f + tr.position.x - tr.scale.x / 2,
-        .y = h / 2.f - tr.position.y - tr.scale.y / 2,
-        .w = tr.scale.x,
-        .h = tr.scale.y
+    auto p1 = tr * glm::vec3(-0.5f, -0.5f, 1.0f);
+    auto p2 = tr * glm::vec3(0.5f, -0.5f, 1.0f);
+    auto p3 = tr * glm::vec3(0.5f, 0.5f, 1.0f);
+    auto p4 = tr * glm::vec3(-0.5f, 0.5f, 1.0f);
+
+    Sint16 vx[] = {
+        Sint16(w / 2 + (int)p1.x),
+        Sint16(w / 2 + (int)p2.x),
+        Sint16(w / 2 + (int)p3.x),
+        Sint16(w / 2 + (int)p4.x),
     };
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, r, g, b, a);
-    SDL_RenderFillRectF(renderer, &rt);
+    Sint16 vy[] = {
+        Sint16(h / 2 - (int)p1.y),
+        Sint16(h / 2 - (int)p2.y),
+        Sint16(h / 2 - (int)p3.y),
+        Sint16(h / 2 - (int)p4.y),
+    };
+
+    (fill ? filledPolygonRGBA : polygonRGBA)(renderer, vx, vy, 4, r, g, b, a);
 }
 
 int main(int argc, char** argv)
@@ -641,20 +660,25 @@ int main(int argc, char** argv)
     script.prelude();
     wnd.bind_input(script.state());
 
-    scene sc(script.start_sync());
-    auto prev = my_clock::now();
+    scene sc(script.start());
+    auto start = my_clock::now();
+    auto prev = start;
 
     while (true)
     {
         sc.prepare(wnd);
 
         auto now = my_clock::now();
-        auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(now - prev);
-        auto deltaTime = std::max(diff.count() / 1000.0, 0.0001);
+        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now - prev);
+        auto passed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start);
+        auto deltaTime = std::max(delta.count() / 1000.0, 0.0001);
         prev = now;
 
         auto ls = script.state();
         lua_getglobal(ls, "Time");
+        lua_pushstring(ls, "time");
+        lua_pushnumber(ls, passed.count() / 1000.0);
+        lua_rawset(ls, -3);
         lua_pushstring(ls, "deltaTime");
         lua_pushnumber(ls, deltaTime);
         lua_rawset(ls, -3);
@@ -672,7 +696,7 @@ int main(int argc, char** argv)
 
         SDL_Delay(16);
 
-        sc.get_root().traverse([](entity& e) {
+        sc.get_root().traverse([](entity& e, const glm::mat3& tr) {
             if (auto scriptComponent = e.get_component("script"))
             {
                 auto ls = scriptComponent.state();
@@ -680,10 +704,19 @@ int main(int argc, char** argv)
                 lua_pushcfunction(ls, handleLuaError);
                 scriptComponent.push();
                 lua_getfield(ls, -1, "onUpdate");
-                if (lua_pcall(ls, 0, 0, -3) != 0)
+                if (lua_isnil(ls, -1))
                 {
-                    std::cout << fmt::format("onUpdate() error: {}\n", lua_tostring(ls, -1));
                     lua_pop(ls, 1);
+                }
+                else 
+                {
+                    lua_pushvalue(ls, -2);
+                    e.get_ref().push();
+                    if (lua_pcall(ls, 2, 0, -5) != 0)
+                    {
+                        std::cout << fmt::format("onUpdate() error: {}\n", lua_tostring(ls, -1));
+                        lua_pop(ls, 1);
+                    }
                 }
                 lua_pop(ls, 2);
             }
